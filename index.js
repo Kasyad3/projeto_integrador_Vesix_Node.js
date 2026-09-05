@@ -161,9 +161,19 @@ app.get('/admin/usuarios/pendentes', (req, res) => {
 // 2. Aprovar usuário (mudar ativo para TRUE)
 app.post('/admin/usuarios/:id/aprovar', (req, res) => {
     const { id } = req.params;
-    db.query('UPDATE usuario SET ativo = TRUE, nivel_acesso = "gerente" WHERE id = ?', [id], (err, result) => {
+    const lojas = Array.isArray(req.body.lojas) ? req.body.lojas : [];
+    db.query('UPDATE usuario SET ativo = TRUE, nivel_acesso = "gerente" WHERE id = ?', [id], (err) => {
         if (err) return res.status(500).json({ error: 'Erro ao aprovar usuário.' });
-        res.json({ success: true });
+        db.query('DELETE FROM usuario_loja WHERE usuario_id = ?', [id], (errDelete) => {
+            if (errDelete) return res.status(500).json({ error: 'Erro ao atualizar lojas do usuário.' });
+            if (!lojas.length) return res.json({ success: true });
+
+            const values = lojas.map(lojaId => [id, lojaId]);
+            db.query('INSERT INTO usuario_loja (usuario_id, loja_id) VALUES ?', [values], (errInsert) => {
+                if (errInsert) return res.status(500).json({ error: 'Erro ao atualizar lojas do usuário.' });
+                res.json({ success: true });
+            });
+        });
     });
 });
 
@@ -408,16 +418,41 @@ app.get('/api/estoque/lojas', (req, res) => {
     if (!req.session.usuario_id) {
         return res.status(401).json({ error: 'Não autenticado' });
     }
+
     const usuarioId = req.session.usuario_id;
+
     db.query(
-        `SELECT l.id, l.nome 
-         FROM loja l
-         INNER JOIN usuario_loja ul ON ul.loja_id = l.id
-         WHERE ul.usuario_id = ?`,
+        `SELECT u.nivel_acesso
+         FROM usuario u
+         WHERE u.id = ?`,
         [usuarioId],
-        (err, rows) => {
-            if (err) return res.status(500).json([]);
-            res.json(rows);
+        (errUsuario, usuarioRows) => {
+            if (errUsuario || !usuarioRows.length) {
+                return res.status(500).json([]);
+            }
+
+            const ehAdmin = usuarioRows[0].nivel_acesso === 'admin';
+
+            let sql = `
+                SELECT DISTINCT l.id, l.nome
+                FROM loja l
+            `;
+            let params = [];
+
+            if (!ehAdmin) {
+                sql += `
+                    INNER JOIN usuario_loja ul ON ul.loja_id = l.id
+                    WHERE ul.usuario_id = ?
+                `;
+                params.push(usuarioId);
+            }
+
+            sql += ` ORDER BY l.nome ASC`;
+
+            db.query(sql, params, (err, rows) => {
+                if (err) return res.status(500).json([]);
+                res.json(rows);
+            });
         }
     );
 });
@@ -443,15 +478,17 @@ app.get('/api/estoque/produtos', (req, res) => {
     INNER JOIN loja l ON l.id = el.id_loja
     `;
     let params = [];
+    const filtros = ['el.quantidade > 0'];
 
     if (estoqueId) {
-        sql += ' WHERE el.id = ?';
+        filtros.push('el.id = ?');
         params.push(estoqueId);
     } else if (lojaId) {
-        sql += ' WHERE el.id_loja = ?';
+        filtros.push('el.id_loja = ?');
         params.push(lojaId);
     }
 
+    sql += ` WHERE ${filtros.join(' AND ')}`;
     sql += ' ORDER BY el.data_registro DESC';
 
     db.query(sql, params, (err, rows) => {
@@ -589,6 +626,27 @@ app.delete('/api/estoque/produtos/:id_estoque', (req, res) => {
 // ROTAS DE HISTÓRICO DE ESTOQUE
 // ==============================
 app.get('/api/estoque/historico', (req, res) => {
+    const tiposPermitidos = ['entrada', 'saida', 'transferencia', 'edicao', 'exclusao'];
+    const tipo = tiposPermitidos.includes(req.query.tipo) ? req.query.tipo : null;
+    const dataInicio = /^\d{4}-\d{2}-\d{2}$/.test(req.query.dataInicio || '') ? req.query.dataInicio : null;
+    const dataFim = /^\d{4}-\d{2}-\d{2}$/.test(req.query.dataFim || '') ? req.query.dataFim : null;
+    const filtros = [];
+    const parametros = [];
+
+    if (tipo) {
+        filtros.push('h.tipo_acao = ?');
+        parametros.push(tipo);
+    }
+    if (dataInicio) {
+        filtros.push('h.data_acao >= ?');
+        parametros.push(`${dataInicio} 00:00:00`);
+    }
+    if (dataFim) {
+        filtros.push('h.data_acao < DATE_ADD(?, INTERVAL 1 DAY)');
+        parametros.push(dataFim);
+    }
+
+    const where = filtros.length ? `WHERE ${filtros.join(' AND ')}` : '';
     db.query(`
         SELECT h.*, u.nome as usuario_nome, p.nome as produto_nome, p.sku, l1.nome as loja_origem_nome, l2.nome as loja_destino_nome
         FROM Historico_Estoque h
@@ -596,11 +654,98 @@ app.get('/api/estoque/historico', (req, res) => {
         LEFT JOIN Produto p ON h.id_produto = p.id_produto
         LEFT JOIN loja l1 ON h.id_loja_origem = l1.id
         LEFT JOIN loja l2 ON h.id_loja_destino = l2.id
+        ${where}
         ORDER BY h.data_acao DESC
         LIMIT 100
-    `, (err, rows) => {
+    `, parametros, (err, rows) => {
         if (err) return res.status(500).json([]);
         res.json(rows);
+    });
+});
+
+app.get('/api/relatorio/estoque.csv', (req, res) => {
+    const tiposPermitidos = ['entrada', 'saida', 'transferencia', 'edicao', 'exclusao'];
+    const tipo = tiposPermitidos.includes(req.query.tipo) ? req.query.tipo : null;
+    const dataInicio = /^\d{4}-\d{2}-\d{2}$/.test(req.query.dataInicio || '') ? req.query.dataInicio : null;
+    const dataFim = /^\d{4}-\d{2}-\d{2}$/.test(req.query.dataFim || '') ? req.query.dataFim : null;
+    const filtros = [];
+    const parametros = [];
+
+    if (tipo) {
+        filtros.push('h.tipo_acao = ?');
+        parametros.push(tipo);
+    }
+    if (dataInicio) {
+        filtros.push('h.data_acao >= ?');
+        parametros.push(`${dataInicio} 00:00:00`);
+    }
+    if (dataFim) {
+        filtros.push('h.data_acao < DATE_ADD(?, INTERVAL 1 DAY)');
+        parametros.push(dataFim);
+    }
+
+    const where = filtros.length ? `WHERE ${filtros.join(' AND ')}` : '';
+    db.query(`
+        SELECT h.id, h.tipo_acao, h.quantidade, h.data_acao, h.detalhes,
+               p.nome AS produto_nome, p.sku, u.nome AS usuario_nome,
+               l1.nome AS loja_origem_nome, l2.nome AS loja_destino_nome
+        FROM Historico_Estoque h
+        LEFT JOIN Produto p ON p.id_produto = h.id_produto
+        LEFT JOIN usuario u ON u.id = h.usuario_id
+        LEFT JOIN loja l1 ON l1.id = h.id_loja_origem
+        LEFT JOIN loja l2 ON l2.id = h.id_loja_destino
+        ${where}
+        ORDER BY h.data_acao DESC
+    `, parametros, (err, movimentacoes) => {
+        if (err) return res.status(500).send('Erro ao gerar relatório.');
+
+        const resumo = { entrada: 0, saida: 0, transferencia: 0, edicao: 0, exclusao: 0 };
+        let valorVendas = 0;
+        movimentacoes.forEach(item => {
+            resumo[item.tipo_acao] += Number(item.quantidade || 0);
+            if (item.tipo_acao === 'saida') {
+                try {
+                    const detalhes = item.detalhes ? JSON.parse(item.detalhes) : {};
+                    valorVendas += Number(item.quantidade || 0) * (Number(detalhes.preco_venda) || 0);
+                } catch (error) {}
+            }
+        });
+
+        const escapar = valor => `"${String(valor ?? '').replace(/"/g, '""')}"`;
+        const linha = valores => valores.map(escapar).join(';');
+        const linhas = [
+            linha(['RELATORIO DE ESTOQUE']),
+            linha(['Filtros', `Tipo: ${tipo || 'Todos'}`, `De: ${dataInicio || '-'}`, `Ate: ${dataFim || '-'}`]),
+            '',
+            linha(['RESUMO']),
+            linha(['Categoria', 'Quantidade', 'Valor']),
+            linha(['Entradas', resumo.entrada, '']),
+            linha(['Saidas / Vendas', resumo.saida, valorVendas.toFixed(2)]),
+            linha(['Transferencias', resumo.transferencia, '']),
+            linha(['Edicoes', resumo.edicao, '']),
+            linha(['Perdas / Exclusoes', resumo.exclusao, '']),
+            '',
+            linha(['MOVIMENTACOES']),
+            linha(['ID', 'Tipo', 'Produto', 'SKU', 'Quantidade', 'Usuario', 'Loja Origem', 'Loja Destino', 'Data', 'Preco Venda', 'Detalhes'])
+        ];
+
+        movimentacoes.forEach(item => {
+            let detalhes = {};
+            try {
+                detalhes = item.detalhes ? JSON.parse(item.detalhes) : {};
+            } catch (error) {}
+            linhas.push(linha([
+                item.id, item.tipo_acao, item.produto_nome || detalhes.nome || '-',
+                item.sku || detalhes.sku || '-', item.quantidade || 0,
+                item.usuario_nome || '-', item.loja_origem_nome || '-',
+                item.loja_destino_nome || '-', new Date(item.data_acao).toLocaleString('pt-BR'),
+                Number(detalhes.preco_venda || 0).toFixed(2), JSON.stringify(detalhes)
+            ]));
+        });
+
+        res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+        res.setHeader('Content-Disposition', 'attachment; filename="relatorio-estoque.csv"');
+        res.send(`\uFEFF${linhas.join('\n')}`);
     });
 });
 

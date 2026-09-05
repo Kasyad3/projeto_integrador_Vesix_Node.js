@@ -448,7 +448,14 @@ function carregarSolicitacoes() {
                         showToast('Selecione pelo menos uma loja para aprovar!');
                         return;
                     }
-                    fetch(`/admin/usuarios/${id}/aprovar`, { method: 'POST' })
+                    const lojas = Array.from(checkboxes)
+                        .filter(cb => cb.checked)
+                        .map(cb => parseInt(cb.value));
+                    fetch(`/admin/usuarios/${id}/aprovar`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ lojas })
+                    })
                         .then(res => res.json())
                         .then(() => carregarSolicitacoes());
                 });
@@ -604,72 +611,33 @@ function carregarGerenciarUsuarios() {
             tabela.querySelectorAll('.salvar-btn').forEach(btn => {
                 btn.addEventListener('click', () => {
                     const id = btn.getAttribute('data-id');
-                    const nivel = tabela.querySelector(`.nivel-acesso[data-id="${id}"]`).value;
+                    const selectNivel = tabela.querySelector(`.nivel-acesso[data-id="${id}"]`);
+                    const nivel = selectNivel ? selectNivel.value : null;
                     const group = tabela.querySelector(`.lojas-checkbox-group[data-id="${id}"]`);
                     const checkboxes = group.querySelectorAll('.loja-checkbox');
                     const lojas = Array.from(checkboxes)
                         .filter(cb => cb.checked)
                         .map(cb => parseInt(cb.value));
 
-                    // Atualiza nível de acesso
-                    fetch(`/admin/usuarios/${id}/nivel`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ nivel_acesso: nivel })
-                    })
-                        .then(res => res.json())
-                        .then(() => {
-                            // Atualiza lojas
-                            fetch(`/admin/usuarios/${id}/lojas`, {
+                    const atualizacoes = [];
+                    if (nivel) {
+                        atualizacoes.push(fetch(`/admin/usuarios/${id}/nivel`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ nivel_acesso: nivel })
+                        }));
+                    }
+                    atualizacoes.push(fetch(`/admin/usuarios/${id}/lojas`, {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify({ lojas })
-                            })
-                                .then(res => res.json())
-                                .then(() => {
-                                    showToast('Alterações salvas com sucesso!');
-                                    carregarGerenciarUsuarios(); // Atualiza a lista
-                                });
+                    }));
+                    Promise.all(atualizacoes)
+                        .then(respostas => Promise.all(respostas.map(res => res.json())))
+                        .then(() => {
+                            showToast('Alterações salvas com sucesso!');
+                            carregarGerenciarUsuarios();
                         });
-                });
-            });
-            tabela.querySelectorAll('.nivel-acesso').forEach(sel => {
-                sel.addEventListener('change', () => {
-                    const id = sel.getAttribute('data-id');
-                    fetch(`/admin/usuarios/${id}/nivel`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ nivel_acesso: sel.value })
-                    });
-                    const group = tabela.querySelector(`.lojas-checkbox-group[data-id="${id}"]`);
-                    if (group) {
-                        const checkboxes = group.querySelectorAll('.loja-checkbox');
-                        if (sel.value === 'admin') {
-                            checkboxes.forEach(cb => {
-                                cb.checked = true;
-                                cb.disabled = true;
-                            });
-                        } else {
-                            checkboxes.forEach(cb => {
-                                cb.disabled = false;
-                            });
-                        }
-                        group.dispatchEvent(new Event('change'));
-                    }
-                });
-            });
-            tabela.querySelectorAll('.lojas-checkbox-group').forEach(group => {
-                group.addEventListener('change', () => {
-                    const id = group.getAttribute('data-id');
-                    const checkboxes = group.querySelectorAll('.loja-checkbox');
-                    const lojas = Array.from(checkboxes)
-                        .filter(cb => cb.checked)
-                        .map(cb => parseInt(cb.value));
-                    fetch(`/admin/usuarios/${id}/lojas`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ lojas })
-                    });
                 });
             });
         });
@@ -821,6 +789,7 @@ function montarSeletorLoja(lojasUsuario, lojaSelecionadaId, onChange) {
     });
 }
 let lojasPermitidasGlobal = [];
+let lojasDisponiveisGlobal = [];
 let lojaSelecionadaIdGlobal = null;
 function carregarEstoque() {
     fetch('/api/estoque/lojas')
@@ -830,6 +799,7 @@ function carregarEstoque() {
                 showToast('Você não está autenticado ou ocorreu um erro ao buscar lojas.');
                 return;
             }
+            lojasDisponiveisGlobal = lojasUsuario;
             lojasPermitidasGlobal = lojasUsuario.map(l => l.id);
             lojaSelecionadaIdGlobal = null;
             montarSeletorLoja(lojasUsuario, lojaSelecionadaIdGlobal, (novaLojaId) => {
@@ -958,6 +928,9 @@ function renderizarFormEntrada(tipo) {
             </form>
         `;
     } else if (tipo === 'transferencia') {
+        const lojaOrigem = document.querySelector('#entrada-loja-origem')?.value;
+        const lojasDestino = lojasDisponiveisGlobal
+            .filter(loja => String(loja.id) !== String(lojaOrigem));
         entradaFormContainer.innerHTML = `
             <form class="entrada-container" id="formEntrada" autocomplete="off">
                 <div class="modal-campo">
@@ -967,9 +940,7 @@ function renderizarFormEntrada(tipo) {
                 <div class="modal-campo">
                     <select id="entradaLojaDestino" name="lojaDestino" required>
                         <option value="" disabled selected hidden></option>
-                        <option value="1">Loja Principal</option>
-                        <option value="2">Loja 1</option>
-                        <option value="3">Loja 2</option>
+                        ${lojasDestino.map(loja => `<option value="${loja.id}">${loja.nome}</option>`).join('')}
                     </select>
                     <label for="entradaLojaDestino">Loja de Destino</label>
                 </div>
@@ -1055,6 +1026,7 @@ function adicionarListenersFormEntrada(tipo) {
                             showToast('Transferência realizada!');
                             entradaFormContainer.innerHTML = '';
                             carregarProdutosEntrada(idLojaOrigem);
+                            carregarEstoque();
                             carregarGraficosDashboard();
                         } else {
                             showToast(resposta.erro || 'Erro ao transferir.');
@@ -1414,18 +1386,30 @@ document.addEventListener('DOMContentLoaded', function () {
 // 12. MOVIMENTAÇÃO DE ESTOQUE
 // ==============================
 function carregarHistoricoMovimentacao() {
-    fetch('/api/estoque/historico')
+    const tipo = document.getElementById('historico-tipo')?.value || '';
+    const dataInicio = document.getElementById('historico-data-inicio')?.value || '';
+    const dataFim = document.getElementById('historico-data-fim')?.value || '';
+    const parametros = new URLSearchParams();
+    if (tipo) parametros.set('tipo', tipo);
+    if (dataInicio) parametros.set('dataInicio', dataInicio);
+    if (dataFim) parametros.set('dataFim', dataFim);
+
+    fetch(`/api/estoque/historico?${parametros.toString()}`)
         .then(res => res.json())
         .then(historico => {
             const secao = document.getElementById('secaoMovimentacao');
             if (!secao) return;
+            historico = filtrarHistoricoLocal(historico, tipo, dataInicio, dataFim);
             if (!historico.length) {
-                secao.innerHTML = '<h1 class="titulosecao">Movimentação</h1><p class="subtitulo-secao">Nenhuma movimentação registrada.</p>';
+                secao.innerHTML = montarFiltrosHistorico() + '<p class="subtitulo-secao">Nenhuma movimentação registrada.</p>';
+                restaurarFiltrosHistorico(tipo, dataInicio, dataFim);
+                ativarFiltrosHistorico();
                 return;
             }
             secao.innerHTML = `
                 <h1 class="titulosecao">Movimentação</h1>
                 <p class="subtitulo-secao">Histórico das últimas ações no estoque.</p>
+                ${montarFiltrosHistorico()}
                 <div class="historico-cards">
                     ${historico.map(item => {
                 let nomeProduto = item.produto_nome;
@@ -1459,7 +1443,73 @@ function carregarHistoricoMovimentacao() {
             }).join('')}
                 </div>
             `;
+            restaurarFiltrosHistorico(tipo, dataInicio, dataFim);
+            ativarFiltrosHistorico();
         });
+}
+
+function filtrarHistoricoLocal(historico, tipo, dataInicio, dataFim) {
+    return historico.filter(item => {
+        if (tipo && item.tipo_acao !== tipo) return false;
+        const data = new Date(item.data_acao);
+        if (Number.isNaN(data.getTime())) return false;
+        const dataItem = [data.getFullYear(), String(data.getMonth() + 1).padStart(2, '0'), String(data.getDate()).padStart(2, '0')].join('-');
+        return (!dataInicio || dataItem >= dataInicio) && (!dataFim || dataItem <= dataFim);
+    });
+}
+
+function restaurarFiltrosHistorico(tipo, dataInicio, dataFim) {
+    document.getElementById('historico-tipo').value = tipo;
+    document.getElementById('historico-data-inicio').value = dataInicio;
+    document.getElementById('historico-data-fim').value = dataFim;
+}
+
+function montarFiltrosHistorico() {
+    return `
+        <div class="historico-filtros">
+            <label>Tipo
+                <select id="historico-tipo">
+                    <option value="">Todos</option>
+                    <option value="entrada">Entrada</option>
+                    <option value="saida">Saída</option>
+                    <option value="transferencia">Transferência</option>
+                    <option value="edicao">Edição</option>
+                    <option value="exclusao">Exclusão</option>
+                </select>
+            </label>
+            <label>De
+                <input type="date" id="historico-data-inicio">
+            </label>
+            <label>Até
+                <input type="date" id="historico-data-fim">
+            </label>
+            <button type="button" id="historico-aplicar-filtro">Filtrar</button>
+            <button type="button" id="historico-limpar-filtro">Limpar</button>
+            <button type="button" id="historico-baixar-relatorio">Baixar relatório</button>
+        </div>
+    `;
+}
+
+function ativarFiltrosHistorico() {
+    document.getElementById('historico-aplicar-filtro')?.addEventListener('click', carregarHistoricoMovimentacao);
+    document.getElementById('historico-baixar-relatorio')?.addEventListener('click', baixarRelatorioEstoque);
+    document.getElementById('historico-limpar-filtro')?.addEventListener('click', () => {
+        document.getElementById('historico-tipo').value = '';
+        document.getElementById('historico-data-inicio').value = '';
+        document.getElementById('historico-data-fim').value = '';
+        carregarHistoricoMovimentacao();
+    });
+}
+
+function baixarRelatorioEstoque() {
+    const parametros = new URLSearchParams();
+    const tipo = document.getElementById('historico-tipo')?.value || '';
+    const dataInicio = document.getElementById('historico-data-inicio')?.value || '';
+    const dataFim = document.getElementById('historico-data-fim')?.value || '';
+    if (tipo) parametros.set('tipo', tipo);
+    if (dataInicio) parametros.set('dataInicio', dataInicio);
+    if (dataFim) parametros.set('dataFim', dataFim);
+    window.location.href = `/api/relatorio/estoque.csv?${parametros.toString()}`;
 }
 
 // ==============================

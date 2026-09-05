@@ -77,6 +77,23 @@
         <div id="secaoMovimentacao" class="secao-conteudo">
             <h1 class="titulosecao">Movimentação</h1>
             <p class="subtitulo-secao">Veja as movimentações recentes.</p>
+            <div class="historico-filtros">
+                <label>Tipo
+                    <select id="historico-tipo">
+                        <option value="">Todos</option>
+                        <option value="entrada">Entrada</option>
+                        <option value="saida">Saída</option>
+                        <option value="transferencia">Transferência</option>
+                        <option value="edicao">Edição</option>
+                        <option value="exclusao">Exclusão</option>
+                    </select>
+                </label>
+                <label>De <input type="date" id="historico-data-inicio"></label>
+                <label>Até <input type="date" id="historico-data-fim"></label>
+                <button type="button" id="historico-aplicar-filtro">Filtrar</button>
+                <button type="button" id="historico-limpar-filtro">Limpar</button>
+                <button type="button" id="historico-baixar-relatorio">Baixar relatório</button>
+            </div>
         </div>
         <div id="secaoEntrada" class="secao-conteudo">
             <h1 class="titulosecao">Entrada</h1>
